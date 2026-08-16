@@ -1,0 +1,233 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function currentUid() {
+      return request.auth.uid;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && currentUid() == uid;
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(currentUid())).data;
+    }
+
+    function getUserRole() {
+      return isSignedIn() ? userDoc().role : null;
+    }
+
+    function getUserBranch() {
+      return isSignedIn() ? userDoc().branchId : null;
+    }
+
+    function isMainAdmin() {
+      return isSignedIn() && getUserRole() in ['admin', 'main_admin'];
+    }
+
+    function isSubAdmin() {
+      return isSignedIn() && getUserRole() == 'sub_admin';
+    }
+
+    function isManager() {
+      return isSignedIn() && getUserRole() == 'manager';
+    }
+
+    function isStaff() {
+      return isSignedIn() && getUserRole() == 'staff';
+    }
+
+    function isAdmin() {
+      return isSignedIn() && getUserRole() in ['admin', 'main_admin', 'sub_admin', 'manager'];
+    }
+
+    function isStaffOrAbove() {
+      return isSignedIn() && getUserRole() in ['admin', 'main_admin', 'sub_admin', 'manager', 'staff'];
+    }
+
+    function canAccessBranch(branchId) {
+      return isMainAdmin()
+        || (getUserRole() in ['sub_admin', 'manager', 'staff'] && getUserBranch() == branchId);
+    }
+
+    // ═════════════════════════════════════════════════════════════
+    // USERS
+    // ═════════════════════════════════════════════════════════════
+    match /users/{uid} {
+      allow create: if isOwner(uid)
+        || isMainAdmin()
+        || (isSubAdmin()
+            && request.resource.data.role == 'staff'
+            && request.resource.data.branchId == getUserBranch());
+
+      allow read: if isOwner(uid) || isAdmin() || isMainAdmin();
+
+      allow update: if isOwner(uid)
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['firstName', 'lastName', 'phone', 'email', 'photoURL', 'updatedAt']);
+
+      allow update: if isAdmin() || isMainAdmin();
+
+      allow delete: if isMainAdmin();
+    }
+
+    // ═════════════════════════════════════════════════════════════
+    // PRODUCTS
+    // ═════════════════════════════════════════════════════════════
+    match /products/{productId} {
+      allow read: if true;
+      allow create, update, delete: if isMainAdmin();
+    }
+
+    // ═════════════════════════════════════════════════════════════
+    // CARTS
+    // ═════════════════════════════════════════════════════════════
+    match /carts/{uid}/items/{itemId} {
+      allow read, write: if isOwner(uid);
+    }
+
+    // ═════════════════════════════════════════════════════════════
+    // ORDERS
+    // ═════════════════════════════════════════════════════════════
+    match /orders/{orderId} {
+      allow create: if isSignedIn();
+
+      allow read: if isSignedIn() && resource.data.userId == currentUid();
+      allow read: if isStaffOrAbove();
+      allow read: if isAdmin();
+
+      allow update: if isStaff()
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly([
+            'status', 'processedBy', 'processedAt', 'processed_at',
+            'acceptedBy', 'accepted_by', 'acceptedByName', 'accepted_by_name',
+            'branchId', 'updatedAt', 'trackingNumber'
+          ]);
+
+      allow update: if isAdmin();
+
+      allow delete: if isMainAdmin();
+
+      match /items/{itemId} {
+        allow create: if isSignedIn()
+          && get(/databases/$(database)/documents/orders/$(orderId)).data.userId == currentUid();
+        allow read: if isSignedIn() && (
+          get(/databases/$(database)/documents/orders/$(orderId)).data.userId == currentUid()
+          || isStaffOrAbove()
+        );
+        allow update, delete: if isStaffOrAbove();
+      }
+
+      match /logs/{logId} {
+        allow read: if isSignedIn() && (
+          get(/databases/$(database)/documents/orders/$(orderId)).data.userId == currentUid()
+          || isStaffOrAbove()
+        );
+        allow write: if isStaffOrAbove();
+      }
+    }
+
+    // ═════════════════════════════════════════════════════════════
+    // USER ADDRESSES
+    // ═════════════════════════════════════════════════════════════
+    match /userAddresses/{uid}/addresses/{addressId} {
+      allow read, write: if isOwner(uid);
+    }
+
+    // ═════════════════════════════════════════════════════════════
+    // BRANCHES
+    // ═════════════════════════════════════════════════════════════
+    match /branches/{branchId} {
+      allow read: if true;
+      allow create, update, delete: if isMainAdmin();
+    }
+
+    // ═════════════════════════════════════════════════════════════
+    // BRANCH INVENTORY
+    // ═════════════════════════════════════════════════════════════
+    match /branch_inventory/{docId} {
+      allow read: if isMainAdmin()
+        || (isStaffOrAbove() && canAccessBranch(resource.data.branchId));
+
+      allow create, update, delete: if isMainAdmin();
+
+      allow create, update, delete: if isSubAdmin()
+        && request.resource.data.branchId == getUserBranch();
+
+      allow update: if isStaff()
+        && resource.data.branchId == getUserBranch()
+        && userDoc().permitStockUpdate == true
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['quantity', 'reorderLevel', 'inventoryStatus', 'updatedAt', 'updatedBy']);
+    }
+
+    // ═════════════════════════════════════════════════════════════
+    // TASKS
+    // ═════════════════════════════════════════════════════════════
+    match /tasks/{taskId} {
+      allow read: if isAdmin();
+      allow read: if isStaff()
+        && (resource.data.assignedTo == currentUid() || resource.data.branchId == getUserBranch());
+      allow create, delete: if isAdmin();
+      allow update: if isStaffOrAbove()
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['status', 'updatedAt', 'updatedBy', 'completedAt', 'completedBy']);
+    }
+
+    match /employee_tasks/{taskId} {
+      allow read, write: if isStaffOrAbove();
+    }
+
+    // ═════════════════════════════════════════════════════════════
+    // BRANCH STAFF
+    // ═════════════════════════════════════════════════════════════
+    match /branch_staff/{docId} {
+      allow read: if isMainAdmin()
+        || (isSubAdmin() && resource.data.branchId == getUserBranch());
+
+      allow create, update, delete: if isMainAdmin();
+
+      allow create, update, delete: if isSubAdmin()
+        && request.resource.data.branchId == getUserBranch();
+    }
+
+    // ═════════════════════════════════════════════════════════════
+    // INVENTORY TRANSFER LOGS
+    // ═════════════════════════════════════════════════════════════
+    match /inventory_transfer_logs/{logId} {
+      allow read: if isMainAdmin()
+        || (isSubAdmin() && (
+          resource.data.fromBranch == getUserBranch()
+          || resource.data.toBranch == getUserBranch()
+          || resource.data.branchId == getUserBranch()
+        ));
+
+      allow create: if isMainAdmin() || isSubAdmin();
+    }
+
+    // ═════════════════════════════════════════════════════════════
+    // DELIVERIES
+    // ═════════════════════════════════════════════════════════════
+    match /deliveries/{deliveryId} {
+      allow read, write: if isStaffOrAbove();
+    }
+
+    // ═════════════════════════════════════════════════════════════
+    // CATEGORIES
+    // ═════════════════════════════════════════════════════════════
+    match /categories/{categoryId} {
+      allow read: if true;
+      allow write: if isMainAdmin();
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
