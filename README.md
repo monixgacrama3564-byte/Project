@@ -6,4 +6,4 @@
 * Built an admin dashboard with **multi-branch inventory, employee, order, and product management**.
 * Implemented role-based access for Main Admin, Sub Admin, Manager, and Staff.
 * Developed PHP APIs and JavaScript modules for backend integration and system functionality.
-* Used **PHP, JavaScript, HTML/CSS, Firebase, MySQL, and Git/GitHub**.
+* Used **PHP, JavaScript, HTML/CSS, Firebase,and MySQL**.
